@@ -40,9 +40,33 @@ func init() {
 			"reset":    HandlerReset,
 			"users":    HandlerUsers,
 			"agg":      HandlerAgg,
-			"addfeed":  HandlerAddFeed,
 			"feeds":    HandlerFeeds,
+
+			// Diese Handler brauchen den eingeloggten User → Middleware einhaken
+			"addfeed":   MiddlewareLoggedIn(HandlerAddFeed),
+			"follow":    MiddlewareLoggedIn(HandlerFollow),
+			"following": MiddlewareLoggedIn(HandlerFollowing),
+			"unfollow":  MiddlewareLoggedIn(HandlerUnFollow),
 		},
+	}
+}
+
+// ==== MiddleWare ====
+
+func MiddlewareLoggedIn(
+	handler func(s *state.State, cmd Command, user database.User) error,
+) func(s *state.State, cmd Command) error {
+	return func(s *state.State, cmd Command) error {
+		ctx := context.Background()
+
+		user, err := s.DB.GetUser(ctx, s.Config.CurrentUserName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Fehler: konnte User nicht finden (%v)\n", err)
+			os.Exit(1)
+		}
+
+		// Aufruf des "inneren" Handlers mit User
+		return handler(s, cmd, user)
 	}
 }
 
@@ -202,7 +226,7 @@ func HandlerAgg(s *state.State, cmd Command) error {
 	return nil
 }
 
-func HandlerAddFeed(s *state.State, cmd Command) error {
+func HandlerAddFeed(s *state.State, cmd Command, user database.User) error {
 	if len(cmd.Args) < 2 {
 		return fmt.Errorf("usage: addfeed <name of feed> <URL of feed>")
 	}
@@ -212,12 +236,6 @@ func HandlerAddFeed(s *state.State, cmd Command) error {
 
 	feedName := cmd.Args[0]
 	feedURL := cmd.Args[1]
-
-	user, err := s.DB.GetUser(ctx, s.Config.CurrentUserName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Fehler: konnte User nicht finden (%v)\n", err)
-		os.Exit(1)
-	}
 
 	feed, err := s.DB.CreateFeed(ctx,
 		database.CreateFeedParams{
@@ -233,7 +251,20 @@ func HandlerAddFeed(s *state.State, cmd Command) error {
 		os.Exit(1)
 	}
 
-	fmt.Printf("feed: %v\n", feed)
+	// Follow erstellen und Rückgabe nutzen
+	feedFollow, err := s.DB.CreateFeedFollow(ctx, database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte Feed-Follow nicht erstellen (%v)\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Feed '%s' wurde erstellt und von '%s' automatisch gefolgt.\n", feed.Name, feedFollow.UserName)
 
 	return nil
 }
@@ -259,6 +290,77 @@ func HandlerFeeds(s *state.State, cmd Command) error {
 		}
 
 		fmt.Println("Username: " + user.Name)
+	}
+
+	return nil
+}
+
+func HandlerFollow(s *state.State, cmd Command, user database.User) error {
+	if len(cmd.Args) < 1 {
+		return fmt.Errorf("usage: follow <url>")
+	}
+	ctx := context.Background()
+	now := time.Now()
+	feedURL := cmd.Args[0]
+
+	feed, err := s.DB.GetFeedByURL(ctx, feedURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte Feed nicht finden (%v)\n", err)
+		os.Exit(1)
+	}
+
+	feedFollow, err := s.DB.CreateFeedFollow(ctx,
+		database.CreateFeedFollowParams{
+			ID:        uuid.New(),
+			CreatedAt: now,
+			UpdatedAt: now,
+			UserID:    user.ID,
+			FeedID:    feed.ID,
+		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte Users nicht laden (%v)\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("FeedFollow erstellt:\nFeed: %s\nUser: %s\n", feedFollow.FeedName, feedFollow.UserName)
+
+	return nil
+}
+
+func HandlerFollowing(s *state.State, cmd Command, user database.User) error {
+
+	ctx := context.Background()
+	currentUserName := s.Config.CurrentUserName
+
+	following, err := s.DB.GetFeedFollowsForUser(ctx, user.ID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte UserFeeds nicht finden (%v)\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Followed Feeds (current-user): %s\n", currentUserName)
+	for _, follow_feed := range following {
+		fmt.Println("Name: " + follow_feed.FeedName)
+	}
+
+	return nil
+}
+
+func HandlerUnFollow(s *state.State, cmd Command, user database.User) error {
+	if len(cmd.Args) < 1 {
+		return fmt.Errorf("usage: unfollow <url>")
+	}
+
+	ctx := context.Background()
+	url := cmd.Args[0]
+
+	err := s.DB.DeleteFeedFollowByUserAndURL(ctx, database.DeleteFeedFollowByUserAndURLParams{
+		ID:  user.ID,
+		Url: url,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler beim Unfollow: %v\n", err)
+		os.Exit(1)
 	}
 
 	return nil
