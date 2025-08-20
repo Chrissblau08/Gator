@@ -27,7 +27,7 @@ func main() {
 	}
 	dbQueries := database.New(db)
 
-	cfg.Print()
+	//cfg.Print()
 
 	// 2. State initialisieren
 	s := &state.State{

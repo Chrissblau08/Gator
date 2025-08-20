@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Chrissblau08/Gator/internal/database"
+	"github.com/Chrissblau08/Gator/internal/rss"
 	"github.com/Chrissblau08/Gator/internal/state"
 	"github.com/google/uuid"
 )
@@ -38,6 +39,9 @@ func init() {
 			"register": HandlerRegister,
 			"reset":    HandlerReset,
 			"users":    HandlerUsers,
+			"agg":      HandlerAgg,
+			"addfeed":  HandlerAddFeed,
+			"feeds":    HandlerFeeds,
 		},
 	}
 }
@@ -169,6 +173,92 @@ func HandlerUsers(s *state.State, cmd Command) error {
 			line += " (current)"
 		}
 		fmt.Println(line)
+	}
+
+	return nil
+}
+
+func HandlerAgg(s *state.State, cmd Command) error {
+	// 1. Prüfen, ob ein URL mitgegeben wurde
+
+	/* Später momentan mit fixxen URL
+	if len(cmd.Args) < 1 {
+		return fmt.Errorf("usage: agg <name>")
+	}
+
+	url := cmd.Args[0]
+	*/
+
+	url := "https://www.wagslane.dev/index.xml"
+	ctx := context.Background()
+
+	feed, err := rss.FetchFeed(ctx, url)
+	if err != nil {
+		return fmt.Errorf("feed konnte nicht geladen werden: %w", err)
+	}
+
+	feed.Print()
+
+	return nil
+}
+
+func HandlerAddFeed(s *state.State, cmd Command) error {
+	if len(cmd.Args) < 2 {
+		return fmt.Errorf("usage: addfeed <name of feed> <URL of feed>")
+	}
+
+	ctx := context.Background()
+	now := time.Now()
+
+	feedName := cmd.Args[0]
+	feedURL := cmd.Args[1]
+
+	user, err := s.DB.GetUser(ctx, s.Config.CurrentUserName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte User nicht finden (%v)\n", err)
+		os.Exit(1)
+	}
+
+	feed, err := s.DB.CreateFeed(ctx,
+		database.CreateFeedParams{
+			ID:        uuid.New(),
+			CreatedAt: now,
+			UpdatedAt: now,
+			Name:      feedName,
+			Url:       feedURL,
+			UserID:    user.ID,
+		})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte Users nicht laden (%v)\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("feed: %v\n", feed)
+
+	return nil
+}
+
+func HandlerFeeds(s *state.State, cmd Command) error {
+	ctx := context.Background()
+
+	feeds, err := s.DB.GetFeeds(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: konnte keine Feeds finden (%v)\n", err)
+		os.Exit(1)
+	}
+
+	for _, feed := range feeds {
+
+		fmt.Println("Name: " + feed.Name)
+		fmt.Println("URL: " + feed.Url)
+
+		user, err := s.DB.GetUserByID(ctx, feed.UserID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Fehler: konnte User nicht finden (%v)\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("Username: " + user.Name)
 	}
 
 	return nil
