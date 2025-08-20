@@ -2,10 +2,14 @@ package commands
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Chrissblau08/Gator/internal/database"
@@ -47,6 +51,7 @@ func init() {
 			"follow":    MiddlewareLoggedIn(HandlerFollow),
 			"following": MiddlewareLoggedIn(HandlerFollowing),
 			"unfollow":  MiddlewareLoggedIn(HandlerUnFollow),
+			"browse":    MiddlewareLoggedIn(HandlerBrowse),
 		},
 	}
 }
@@ -203,27 +208,44 @@ func HandlerUsers(s *state.State, cmd Command) error {
 }
 
 func HandlerAgg(s *state.State, cmd Command) error {
-	// 1. Prüfen, ob ein URL mitgegeben wurde
-
-	/* Später momentan mit fixxen URL
 	if len(cmd.Args) < 1 {
-		return fmt.Errorf("usage: agg <name>")
+		return fmt.Errorf("usage: agg <time_between_reqs>")
 	}
 
-	url := cmd.Args[0]
-	*/
-
-	url := "https://www.wagslane.dev/index.xml"
-	ctx := context.Background()
-
-	feed, err := rss.FetchFeed(ctx, url)
+	// Zeitintervall parsen
+	timeBetweenRequests, err := time.ParseDuration(cmd.Args[0])
 	if err != nil {
-		return fmt.Errorf("feed konnte nicht geladen werden: %w", err)
+		return fmt.Errorf("invalid duration: %w", err)
 	}
 
-	feed.Print()
+	fmt.Printf("Collecting feeds every %s\n", timeBetweenRequests)
 
-	return nil
+	// Ticker starten
+	ticker := time.NewTicker(timeBetweenRequests)
+	defer ticker.Stop()
+
+	// Signal für sauberes Beenden (Ctrl+C)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+
+	// Erste Ausführung sofort
+	go func() {
+		ScrapeFeeds(s)
+	}()
+
+	for {
+		select {
+		case <-ticker.C:
+			ScrapeFeeds(s)
+		case <-sigCh:
+			fmt.Println("Stopping feed collection...")
+			return nil
+		case <-ctx.Done():
+			return nil
+		}
+	}
 }
 
 func HandlerAddFeed(s *state.State, cmd Command, user database.User) error {
@@ -361,6 +383,111 @@ func HandlerUnFollow(s *state.State, cmd Command, user database.User) error {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fehler beim Unfollow: %v\n", err)
 		os.Exit(1)
+	}
+
+	return nil
+}
+
+// ==== Helper Functions ====
+func ScrapeFeeds(s *state.State) error {
+	ctx := context.Background()
+
+	// 1. Nächsten Feed abrufen
+	feed, err := s.DB.GetNextFeedToFetch(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler beim Abrufen des nächsten Feeds (%v)\n", err)
+		os.Exit(1)
+	}
+
+	// 2. Feed als abgerufen markieren
+	if err := s.DB.MarkFeedFetched(ctx, feed.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler beim Markieren des Feeds als abgerufen (%v)\n", err)
+		os.Exit(1)
+	}
+
+	// 3. Feed-Daten abrufen
+	rssFeed, err := rss.FetchFeed(ctx, feed.Url)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler beim Abrufen des Feeds von URL %s (%v)\n", feed.Url, err)
+		os.Exit(1)
+	}
+
+	// 4. Feed-Items iterieren und in DB speichern
+	fmt.Printf("Feed: %s (%s)\n", feed.Name, feed.Url)
+	for _, item := range rssFeed.Channel.Item {
+		// published_at parsen
+		var publishedAt time.Time
+		if item.PubDate != "" {
+			publishedAt, _ = time.Parse(time.RFC1123Z, item.PubDate) // Standardformat RFC1123Z
+			if publishedAt.IsZero() {
+				publishedAt, _ = time.Parse(time.RFC1123, item.PubDate)
+			}
+		}
+
+		err := s.DB.CreatePost(ctx, database.CreatePostParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			Title:     item.Title,
+			Url:       item.Link,
+			Description: sql.NullString{
+				String: item.Description,
+				Valid:  item.Description != "",
+			},
+			PublishedAt: sql.NullTime{Time: publishedAt, Valid: !publishedAt.IsZero()},
+			FeedID:      feed.ID,
+		})
+		if err != nil {
+			if strings.Contains(err.Error(), "duplicate key") {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "Fehler beim Speichern des Posts '%s' (%v)\n", item.Title, err)
+		} else {
+			fmt.Printf("Post gespeichert: %s\n", item.Title)
+		}
+	}
+
+	return nil
+}
+
+func HandlerBrowse(s *state.State, cmd Command, user database.User) error {
+	ctx := context.Background()
+
+	// 1. Limit aus den Argumenten auslesen, Standard = 2
+	limit := 2
+	if len(cmd.Args) >= 1 {
+		if l, err := strconv.Atoi(cmd.Args[0]); err == nil && l > 0 {
+			limit = l
+		} else {
+			fmt.Fprintf(os.Stderr, "Ungültiger Limit-Wert '%s', benutze Standard %d\n", cmd.Args[0], limit)
+		}
+	}
+
+	// 2. Posts aus der DB abrufen
+	posts, err := s.DB.GetPostsForUser(ctx, database.GetPostsForUserParams{
+		ID:    user.ID,
+		Limit: int32(limit),
+	})
+	if err != nil {
+		return fmt.Errorf("fehler beim Abrufen der Posts: %w", err)
+	}
+
+	// 3. Posts ausgeben
+	if len(posts) == 0 {
+		fmt.Println("Keine Posts gefunden.")
+		return nil
+	}
+
+	for i, post := range posts {
+		fmt.Printf("[%d] %s\n", i+1, post.Title)
+		fmt.Printf("    URL: %s\n", post.Url)
+		if post.Description.Valid {
+			fmt.Printf("    Description: %s\n", post.Description.String)
+		}
+		if post.PublishedAt.Valid {
+			fmt.Printf("    Published: %s\n", post.PublishedAt.Time.Format(time.RFC1123))
+		}
+		fmt.Println("---------------------------------------------------")
 	}
 
 	return nil
