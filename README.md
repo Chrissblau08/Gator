@@ -29,11 +29,6 @@ Lege eine `.gatorconfig.json` im Home-Verzeichnis an:
   "current_user_name": "<Dein UserName beim Login>"
 }
 ```
-
-
-
-Alles klar! Dann kannst du es in der README so erklären – ich formuliere es Schritt für Schritt inklusive Beispiele, wie man die ausführbare Datei benutzt:
-
 ---
 
 ## Installation
