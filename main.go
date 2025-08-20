@@ -1,13 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"os"
 
 	"github.com/Chrissblau08/Gator/internal/commands"
 	"github.com/Chrissblau08/Gator/internal/config"
+	"github.com/Chrissblau08/Gator/internal/database"
 	"github.com/Chrissblau08/Gator/internal/state"
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -18,8 +21,17 @@ func main() {
 		cfg = &config.Config{} // leere Config anlegen
 	}
 
+	db, err := sql.Open("postgres", cfg.DB_URL)
+	if err != nil {
+		fmt.Println(err)
+	}
+	dbQueries := database.New(db)
+
+	cfg.Print()
+
 	// 2. State initialisieren
 	s := &state.State{
+		DB:     dbQueries,
 		Config: cfg,
 	}
 
@@ -42,7 +54,4 @@ func main() {
 		fmt.Printf("Fehler: %v\n", err)
 		os.Exit(1) // Exit Code 1 bei Fehler
 	}
-
-	// 5. Optional: Config ausgeben
-	cfg.Print()
 }
