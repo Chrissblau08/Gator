@@ -168,8 +168,7 @@ browse 5
 ---
 
 ## Extending the Project
-
-* You've done all the required steps, but if you'd like to make this project your own, here are some ideas:
+Some ideas to expand the project:
 * Add sorting and filtering options to the browse command
 * Add pagination to the browse command
 * Add concurrency to the agg command so that it can fetch more frequently
